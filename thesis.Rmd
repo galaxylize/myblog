@@ -1,0 +1,936 @@
+---
+title: "决策树和线性回归的实际应用---FIFA 18数据分析"
+author:
+  - 杜澧泽
+documentclass: ctexart
+header-includes:
+   - \usepackage{bbm}
+   - \setCJKmainfont{宋体}
+   - \usepackage{times}
+   - \fontsize{12pt}{18pt}\selectfont
+   - \pagestyle{plain}
+   - \usepackage[a4paper,left=3.17cm,right=3.17cm,top=2.54cm,bottom=2.54cm]{geometry}
+   - \usepackage{float}
+output:
+  rticles::ctex:
+    fig_caption: yes
+    number_sections: no
+    toc: no
+    
+classoption: "hyperref,"
+---
+
+#\leftline{\heiti \fontsize{15pt}{22.5pt} \selectfont 一、数据}
+
+##\leftline{\heiti \fontsize{14pt}{21pt} \selectfont (一)数据来源}
+
+本数据来自于**kaggle**数据平台的 [**FIFA 18 More Complete Player Dataset**](https://www.kaggle.com/kevinmh/fifa-18-more-complete-player-dataset)。数据提供者是Kevin H。
+
+##\leftline{\heiti \fontsize{14pt}{21pt}\selectfont (二)数据描述及论文思路}
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 1.数据描述}
+
+本数据包含了**FIFA 18**中：
+\begin{itemize}
+\item 每个球员在185个方面的能力值；
+\item 球员信息，例如：年龄，俱乐部，联赛，国籍，薪水以及其他的身体属性；
+\item 全部的游戏属性，例如：射门和盘带；
+\item 特殊属性，例如：盘带技巧和国际名望；
+\item 球员的特质；
+\item 总体能力，潜力和每一个位置的评价。
+\end{itemize}
+
+本数据一共有17994个观测值和185个变量，下面是部分数据。
+
+```{r,echo=FALSE,include=FALSE}
+library(feather) 
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+path<-"complete.feather" 
+df<-read_feather(path)
+data0<-as.tibble(df)
+#tibble is a better data structrue than data.frame
+```
+
+```{r,echo=FALSE}
+kable(head(data0 %>% select("name","club","age",
+                       "nationality","overall")),caption="FIFA 18数据(部分))")
+  
+```
+
+上面的FIFA 18数据（部分）表中我们截取了球员姓名，俱乐部，年龄，国籍，总体能力值数据的前六行，从中我们可以读出球员的一些基础信息，例如：M.Neuer 是国籍德国来自于拜仁慕尼黑俱乐部的总体能力值为92的年龄为31岁的球员。
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 2.论文思路}
+
+本篇论文基于**FIFA 18**球员数据，
+
+首先利用ggplot2包对数据利用可视化的手段进行直观地分析和考察,从而发现具有代表性的数据和具有代表性的属性,并从中选取一家俱乐部（LIVERPOOL 俱乐部）进行针对一支球队的分析，发现一只球队的人员组成和场上位置的信息，并且根据可视化结果对这家俱乐部进行更加深入地分析。之后根据可视化的结果，选取恰当的数据集，为进一步的建立决策树模型和线性回归的模型建立基础；
+
+之后我们利用具有代表性的数据集作为训练集来训练模型，运用ID3决策树算法,构建将球员分类的决策树，并且用与训练集不相关的测试集测试得到的精度。由于在对场上位置与球员属性进行建模时，我们对球员分为了front，center，back，gk四部分，而这个划分是具有随机性的，影响了分类的准确度（在划分时，我们根据球员场上位置能力最高的数值去决定，而球员可能在作为前场球员和中场球员在各自的位置能力值同样为最大，这个时候我们随机选取某个位置作为他的分类。例如，球员A的cf能力值和cam能力值同样为最大的84，这个时候将其划分为前场或者中场球员的概率皆为0.5）。之后我们将根据得到的精度对模型进行相应的调整和分析；
+
+接下来我们建立用相同的数据建立的线性回归模型，得到四种球员分类和相应球员属性的线性回归模型，并且对模型的显著性和变量的显著性进行分析和选择，再用和之前相同的测试集的数据进行测试；
+
+对用决策树分类以及线性回归得出的精度进行比较，对两种方法的适用场景和优劣进行讨论。
+
+
+#\leftline{\heiti \fontsize{15pt}{22.5pt} \selectfont 二、数据可视化及分析}
+
+下图是用R语言的**ggplot2**包得到的球员年龄密度曲线。
+
+```{r,echo=FALSE,fig.cap="年龄密度曲线",fig.height=3,fig.width=6}
+ggplot(data0, aes(age, fill = age)) +
+geom_density(position = "stack")
+```
+
+如图所示，球员年龄集中在20-25岁，年龄最小的球员为16岁，年龄最大的超过了40岁。当球员年龄超过25岁时，密度曲线急速下降，当球员年龄不足20岁时密度曲线急速上升，由此我们可以推断出球员的黄金运动年龄是20-28岁。
+
+进一步地，我们想知道年龄和运动能力的相关关系，所以我们画了球员总体能力关于年龄的曲线。
+
+```{r,echo=FALSE,fig.cap="总体能力与年龄关系曲线",fig.height=2,fig.width=6,warning=FALSE}
+data1<-data0%>%select("age","overall")%>%filter(age<38&age>18)%>%group_by(age)%>%summarise(mean_overall=mean(overall))
+ggplot(data = data1,aes(x=age,y=mean_overall))+
+  geom_line(color="red",size=2)+
+  annotate("text", x = 30, y = max(data1$mean_overall),color="blue", label = "Max", parse = TRUE, size = 5)
+```
+
+我们可以看到，能力值在30岁之前呈递增趋势，30岁之后呈递减趋势，但减小的速度较慢，球员总体能力在30岁达到巅峰，然而这个结果与图一的峰值有一个延迟，由此我们可以得出结论：在30岁仍然活跃在场上的运动员的运动能力比普通球员优秀，他们的运动生命也长于普通球员；此外年轻球员的成长速度比职业生涯末期身体机能衰退的速度要快，因此很多球员在30岁之后仍然可以活跃在足球场上。
+
+接下来，我们想知道哪些联赛的明星球员最多（我们将能力值大于81的球员划分为明星球员）。所以我们统计出明星球员最多的十大联赛，并用柱状图表示出来。
+
+```{r,echo=FALSE,fig.cap="十大联赛明星球员数量",fig.width=16,fig.height=7}
+star<-data0%>%filter(overall>81)%>%group_by(league)%>%summarise(n=n())
+star<-star[-11,]
+ggplot(star,aes(league,n))+ geom_bar(position = "dodge",stat = "identity",aes(fill = 2))+ guides(fill = FALSE)+
+  geom_text(aes(label = n),vjust = -1)
+```
+
+我们可以发现English Premier League的明星球员最多为87人，可以称为世界第一联赛，紧随其后的是Spanish Primer Division和Italian Serie A，分别有63和53人。\newpage
+
+了解了球星在不同联赛的分布后，下面我们想看一下球星的国家分布，看一下世界上哪几个国家盛产足球明星。
+
+```{r,echo=FALSE,include=FALSE}
+library(rworldmap)
+number<-data0%>%filter(overall>81)%>%group_by(nationality)%>%summarise(n=n())
+fr <- joinCountryData2Map(dF =number,joinCode="NAME",nameJoinColumn = "nationality",verbose=F) 
+```
+
+```{r echo=FALSE,warning=FALSE,fig.cap="球星的国家分布",fig.width=15,fig.height=8}
+mapCountryData(mapToPlot = fr,nameColumnToPlot = "n",catMethod = "fixedWidth", oceanCol = "steelblue1",missingCountryCol = "white", aspect = "variable",mapTitle = "star's nationality")
+```
+
+从图中我们可以看到，这些明星球员大都来自于传统的足球强国，西班牙，德国，法国，巴西，阿根廷是足球人才的产出大国。其中来自于西班牙的球星达到了惊人的47人，由此我们也可以理解了西班牙国家队在近些年的国际大赛中的卓越战绩。亚洲方面，日本显得一枝独秀，而中国的球星数量是0，看来国足想要变强路途还很漫长。
+
+接下来我们感兴趣的是当今世界上十大最顶尖俱乐部的数据，我们按照队内平均能力值的高低决定出了十大顶尖俱乐部。
+
+```{r,echo=FALSE}
+top_player<-data0 %>% select("name","club","age","league","height_cm","weight_kg",
+                       "nationality","eur_value","eur_wage","overall",
+                       "potential",34:94) %>% filter(overall>80)
+#first we load the variable we are interested in
+GK_player<-filter(top_player,!is.na(gk)) %>% select(-(46:71))
+other_player<-filter(top_player,is.na(gk)) %>% select(-72)
+league<-top_player$league[!duplicated(top_player$league)]
+top_club<-top_player$club
+club_data <- data0 %>% filter(club %in% top_club) %>%
+  group_by(league,club) %>% 
+  summarise(count = n(),mean_overall = round(mean(overall)),
+            mean_age = round(mean(age)), mean_potential = round(mean(potential)),
+            total_cost = round(sum(eur_value)), total_wage = round(sum(eur_wage)))
+top10_club<-club_data %>% arrange(desc(mean_overall)) %>% head(10)
+kable(top10_club[,1:5],caption = "十大俱乐部数据")
+```
+
+下图是FIFA 18中的十大顶尖俱乐部的平均能力值和球员数量的散点图。其中点的大小代表了球员的数量的多少，点的颜色越浅代表能力值越高，从图中我们可以看到FC Barcelona的平均能力值最高为83，Manchester United的球员数最多为32人。
+
+```{r,fig.cap="十大顶尖俱乐部",fig.width=12,fig.height=6,echo=FALSE,warning=FALSE}
+ggplot(top10_club,aes(x=club,y=mean_overall))+geom_point(aes(color =mean_overall,size=count))+
+  labs( y = "attribute" , x = NULL) +
+  geom_text(aes(label = mean_overall),vjust = -1)+ theme(legend.position ="none")
+```
+
+接下来我们研究一个足球俱乐部的球员组成的情况，这里我们以**Liverpool**足球俱乐部为例：
+
+下表是**Liverpool**足球俱乐部的数据，包含了球员姓名，年龄，国籍，身价，能力值，场上位置。由于我们对于相同能力值的场上位置（例如cam 83，cdm 83，cm 83），我们采取了随机选取一个位置的方法，故此分类有比较大的随机性
+
+```{r echo=FALSE}
+LFC<-data0 %>% filter(club == "Liverpool")%>% select("name","club","age","league","height_cm","weight_kg",
+                      "nationality","eur_value","eur_wage","overall", "potential",34:94) 
+NAME<-names(LFC)[46:72]
+loc<-function(x){
+  i=max(x,na.rm=T)
+  index = which(x==i)
+  return(NAME[index])
+}#helper function
+location=list()
+name = LFC$name
+for(i in 1:32){
+  location[[name[i]]] = loc(as.vector(unlist(LFC[i,][46:72])))
+  l=length(location[[name[i]]])
+  location[[name[i]]]= location[[name[i]]][sample(l)[1]]
+}
+#now we know everyone's best location
+LFC$loc=unlist(location)
+loc_data<-LFC %>% group_by(loc) %>% summarise(count = n())
+liverpool<-LFC %>% select("name","age", "nationality","eur_value","overall")
+liverpool$loc<-location
+kable(liverpool,caption="liverpool球员数据")
+```
+
+由于场上的具体位置过于繁琐，所以我们把场上的位置分为"gk", "front", "center", "back"四种，方便我们接下来的数据处理。
+
+\begin{itemize}
+\item 将gk划分为gk
+\item 将cf,lf,ls,lw,rf,rw,rs,st划分为front（即以f,s,w,t结尾）
+\item 将cam,ldm,ram,rcm,rdm,rm,cdm,cm,lm,lam,lcm划分为center（即以m结尾）
+\item 将cb,lcb,lwb,rcb,rwb,rb,lb划分为back。（即以b结尾）
+\end{itemize}
+
+之后我们统计出**Liverpool**足球俱乐部场上每一个位置的球员数量，并且用柱状图表示出来。\newpage
+
+```{r,echo=FALSE,fig.cap="LFC 球员位置"}
+ggplot(loc_data,aes(fct_reorder(loc,count, .desc = T), count, label = count)) + 
+  geom_bar(aes(fill = fct_reorder(loc,count, .desc = T)),stat = "identity") + theme_bw() + 
+  theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5), plot.title=element_text(size=20, face="bold"))+
+  geom_text(size = 3, position = position_stack(vjust=1.08)) +
+  labs(title = "Number of locations", y = "Number" , x = "location") +theme(legend.title=element_blank())+theme(legend.position = "none")
+
+```
+
+从图中我们可以看到**Liverpool**足球俱乐部的球员位置构成，我们可以看到前，中，后场球员及门将的比例为10：9：9：4，我们认为这是一个比较均衡的足球俱乐部球员的配置。以“w”结尾的代表的是边锋，我们可以看到**Liverpool**足球俱乐部可以打边锋的球员有7个之多，而“cf”代表的中锋只有一个。据此我们可以推断出，这家俱乐部的打法会是以边路的速度冲击为主，而没有传统意义上的中锋作为支点。另外我们发现以“l”开头，“b”结尾代表的左后卫人数人数很少，因此这个球队的左路会是他防守时的薄弱环节，一旦有这个位置的球员受伤，能够补充进首发的球员便捉襟见肘。之后我们将根据基于游戏属性构建的决策树模型和线性回归模型重新划分**Liverpool**足球俱乐部的场上球员的位置。
+
+#\leftline{\heiti \fontsize{15pt}{22.5pt} \selectfont 三、决策树模型}
+
+##\leftline{\heiti \fontsize{14pt}{21pt}\selectfont(一)决策树简介及类型}
+
+决策树是一种分类器，它代表的是属性与分类之间的一种映射关系。树中的每个非叶子结点代表了一个属性（attribute），根据这个属性将位于此结点的对象划分到他的子节点，通过迭代，直到结点中的所有对象划为一类或满足终止条件结束迭代。通俗地讲，每一个结点相当于一个“问题”，根据每一个对象回答的“答案”（即树杈），将其划分到下面的结点进行新一轮的“问答”。我们建立决策树的最终目的是对未来的数据进行很好的分类，即我们关心的是决策树的预测能力，当用测试集 测试时，精度高的决策树更好。常见的决策树有ID3,C4.5，CART等，这篇论文将采用ID3算法。
+
+##\leftline{\heiti \fontsize{14pt}{21pt}\selectfont (二)ID3算法}
+
+决策树ID3算法的核心算法是以信息增益作为变量选择的准则，选择信息增益最大的属性进行决策树的分叉。
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 1.下面我们介绍熵（entropy）和信息增益（information gain）的概念}
+
+
+\noindent 熵（entropy）\newline
+熵表示状态的混乱程度,也可以理解为信息量。我们知道一个1-100的数可以用七个yes/no的问题来决定，即$\log(100)=6.64 \approx 7$，所以对于一个大小为$|S|$的集合S，我们至少需要做$\log(|S|)$次的迭代，才能做出决定。若$S=P\bigcup N$,其中P和N是两个不相交的集合，并且$|P|=p,|N|=n$,我们要决定S中的任何一个元素需要做$(p/(n+p))*\log(p)+(n/(n+p))*\log(n)$次迭代，这就是我们所说的熵（entropy），用H(Y)来表示。$$H(Y)=\sum_{i=1}^{k}-P(Y=y_i)*\log(P(Y=y_i))$$ 
+
+条件熵和信息增益（conditional entropy and information gain）
+
+条件熵用H（Y|X）表示，$$H(Y|X=v)=\sum_{i=1}^{k}-P(Y=y_i|X=v)*\log(P(Y=y_i|X=v))$$ $$H(Y|X)=\sum_{v\space values\space of\space X} P(X=v)*H(Y|X=v) $$
+信息增益用户I(Y;X)表示，$$I(Y;X)=H(Y)- H(Y|X)$$ 在每一个结点我们选择可以最大化I(Y;X)的属性。
+
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 2.决策树算法}
+\noindent buildtree(examples,attributes,default-label)\newline if empty(examples) then return default-label\newline if(examples have same label y) then return y\newline if empty(attributes) then return majority vote in examples\newline q=best_attribute(examples,attributes)\newline tree= create-node with attribute q\newline foreach value v of attribute q 
+
+  v-ex = subset of examples with q==v
+  
+  subtree = buildtree(v-ex,attributes-{q},majority-class(examples))\newline  
+\space add arc form tree to subtree\newline return tree
+
+##\leftline{\heiti \fontsize{14pt}{21pt} \selectfont (三)数据集的选取及决策树算法实现}
+
+考虑到本数据的数据量过于庞大，所以我们选择有代表性的数据进行数据分析，因为往往人们的关注点都在优秀的顶级球员身上，故我们将总体能力值大于80的球员筛选出来，并组合他们的 name, club, age, league, height_cm, weight_kg, nationality, eur_value, eur_wage, overall, potential,及他们的游戏属性例如：射门，盘带，头球精度等作为我们训练决策树的训练集。在这里面我们去除掉来自于 **Liverpool**足球俱乐部的球员，因为我们将要用这组数据作为测试集。
+
+为了更好地分类，我们对于每一个属性，根据能力值的大小分为六个层次：
+\begin{itemize}
+\item 能力值小于等于50：“1”
+\item 能力值小于等于60大于50 “2”
+\item 能力值小于等于70大于60 “3”
+\item 能力值小于等于80大于70 “4”
+\item 能力值小于等于90大于80 “5”
+\item 能力值大于90 “6”
+\end{itemize}
+
+\noindent 在这里我们将位置从具体的场上位置（cf, cam等），划分为front, center, back, gk四种。
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 1.第一种分类方法及测试集}
+
+下表是训练集的部分数据，可以看到我们把原先的数据转化成了对于每个属性1-6的评级，把分类转化为了front, center, back, gk四种。从而可以方便地应用到决策树模型中去。
+
+```{r,echo=FALSE,warning=FALSE}
+top_player[is.na(top_player)]<-0
+decisiontree_data<-top_player%>%filter(club!="Liverpool")
+attribute<-function(x){
+  if(x<=50){
+    return("1")
+  }
+  else if(x>50&x<=60){
+    return("2")
+  }
+  else if(x>60&x<=70){
+    return("3")
+  }
+  else if(x>70&x<=80){
+    return("4")
+  }
+  else if(x>80&x<=90){
+    return("5")
+  }
+  else {
+    return("6")
+  }
+  
+}
+attr<-list()
+for(i in 1:379){
+  attr[[i]]=decisiontree_data[i,][12:45] %>% sapply(attribute)
+}
+attr1<-list()
+attr2<-vector()
+for(i in 1:34){
+  for(j in 1:379){
+    attr2[j]=attr[[j]][i]
+  }
+  attr1[[i]]=attr2
+}
+att<-as.data.frame(attr1)
+colnames(att)=names(top_player[12:45])
+locationall<-list()
+for(i in 1:391){
+  locationall[[i]] = loc(as.vector(unlist(decisiontree_data[i,][46:72])))
+  l=length(locationall[[i]])
+  locationall[[i]]= locationall[[i]][sample(l)[1]]
+}
+att$loc<-unlist(locationall)
+#now, to simplify the question, we classify the loc into "front", "center"
+#"back","gk"
+classify<-vector()
+for(i in 1:length(att$loc)){
+  if(endsWith(att$loc[i],"t")||endsWith(att$loc[i],"s")||endsWith(att$loc[i],"f")||endsWith(att$loc[i],"w")){
+    classify[i]="front"
+  }
+  else if(endsWith(att$loc[i],"m")){
+    classify[i]="center"
+  }
+  else if(endsWith(att$loc[i],"b")){
+    classify[i]="back"
+  }
+  else{
+    classify[i]="gk"
+  }
+}
+att$class<-classify
+tree<-att
+tree$loc=NULL
+kable(head(tree[,30:35],10),caption = "决策树training set（部分）")
+#ok now we begin to build the tree
+```
+
+之后，我们将数据导出为txt文件，training set中共有391个观测值，
+
+```{r,echo=FALSE}
+write.table(tree,"tree.txt",col.names = F,row.names = F,quote = F,sep = ",")
+```
+
+接下来，我们利用 **Liverpool** 足球俱乐部的球员数据作为测试集去检验决策树的精度，同样的我们把原始数据转化为可以方便应用决策树模型的形式，下表是部分测试集数据。
+
+```{r,echo=FALSE}
+liverpool<-list()
+for(i in 1:32){
+  liverpool[[i]]=LFC[i,][12:45] %>% sapply(attribute)
+}
+attr3<-list()
+attr4<-vector()
+for(i in 1:34){
+  for(j in 1:32){
+    attr4[j]=liverpool[[j]][i]
+  }
+  attr3[[i]]=attr4
+}
+lfc<-as.data.frame(attr3)
+colnames(lfc)=names(top_player[12:45])
+locationall1<-list()
+for(i in 1:32){
+  locationall1[[i]] = loc(as.vector(unlist(LFC[i,][46:72])))
+  l=length(locationall1[[i]])
+  locationall1[[i]]= locationall1[[i]][sample(l)[1]]
+}
+lfc$loc<-unlist(locationall1)
+classify1<-vector()
+for(i in 1:length(lfc$loc)){
+  if(endsWith(lfc$loc[i],"t")||endsWith(lfc$loc[i],"s")||endsWith(lfc$loc[i],"f")||endsWith(lfc$loc[i],"w")){
+    classify1[i]="front"
+  }
+  else if(endsWith(lfc$loc[i],"m")){
+    classify1[i]="center"
+  }
+  else if(endsWith(lfc$loc[i],"b")){
+    classify1[i]="back"
+  }
+  else{
+    classify1[i]="gk"
+  }
+}
+lfc$class<-classify1
+tree_test<-lfc
+tree_test$loc=NULL
+tree_test$class<-c("center", "front"  ,"front" , "front" ,"back",   "center" ,"back"  ,  "center" ,"center" , "front",  "back" ,  "gk" ,    "center", "gk" , "front" , "center" ,"front",  "front",  "back"   ,"back" ,  "center", "front", "gk" , "back", "back",   "gk"  ,   "center" ,"back" , 
+ "center", "front" , "back" ,  "front")
+#ok now we begin to build the tree
+kable(head(tree_test[,30:35],10),caption = "决策树测试集（部分）")
+```
+
+之后，我们将数据导出为txt文件，testing set中共有34个观测值，
+
+```{r,echo=FALSE}
+write.table(tree_test,"tree_test.txt",col.names = F,row.names = F,quote = F,sep = ",")
+
+```
+
+决策树的实现是在java环境下完成的，最终预测的精度为0.6875，我们把预测的结果与原始分类在下表中列出。
+
+```{r,echo=FALSE}
+m<-matrix(c("center","front","front","front","back","center","back","center",
+            "center","front","back","gk","center","gk","front","center",
+            "center","center","back","back","center","center","gk","center",
+            "center","gk","center","center","back","center","gk","center",
+          tree_test$class),byrow = F,ncol = 2)
+
+rownames(m)<-LFC$name
+colnames(m)<-c("predict","original")
+kable(m,caption = "testing set 原分类与预测分类对比")
+```
+
+表格中从上至下可以看到，上面的数据分类准确率很高，下面的数据分类准确率较低，根据现实的情况，上面的球员是主力球员，而下面的球员是年龄比较小的青训球员或者是替补球员，意味着对于能力值比较高的球员的分类效果及预测能力比较好。而由于我们的训练集是选取的能力值大于80的顶尖球员，也就是我们得到的决策树对于顶尖球员的预测能力比较好。根据这些发现，我们可以大胆地猜测，个人球风比较鲜明的球员（比较容易被分类）比较容易在一个球队打主力，而球员的成长过程也是一个不断找到最适合自己的球风的过程，也是对于年轻球员的一个启发，找到自己的特色并不断进步才是成长为球星的正确道路。
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 2.第二种分类方法}
+
+由此，我们尝试去扩大训练集，将范围扩大到能力值大于60的球员，我们相信这时的决策树的预测能力将大大提高，对于能力值不高的球员也可以较为准确的预测。
+
+下表是我们得到的新的训练集的部分数据。
+
+```{r,echo=FALSE}
+renew<-data0 %>% select("name","club","age","league","height_cm","weight_kg",
+                       "nationality","eur_value","eur_wage","overall",
+                       "potential",34:94) %>% filter(overall>60)
+renew[is.na(renew)]<-0
+decisiontree_newdata<-renew%>%filter(club!="Liverpool")
+newattr<-list()
+for(i in 1:14370){
+  newattr[[i]]=decisiontree_newdata[i,][12:45] %>% sapply(attribute)
+}
+newattr1<-list()
+newattr2<-vector()
+for(i in 1:34){
+  for(j in 1:14370){
+    newattr2[j]=newattr[[j]][i]
+  }
+  newattr1[[i]]=newattr2
+}
+newatt<-as.data.frame(newattr1)
+colnames(newatt)=names(renew[12:45])
+newlocationall<-list()
+for(i in 1:14370){
+  newlocationall[[i]] = loc(as.vector(unlist(decisiontree_newdata[i,][46:72])))
+  l=length(newlocationall[[i]])
+  newlocationall[[i]]= newlocationall[[i]][sample(l)[1]]
+}
+newatt$loc<-unlist(newlocationall)
+#now, to simplify the question, we classify the loc into "front", "center"
+#"back","gk"
+classify<-vector()
+for(i in 1:length(newatt$loc)){
+  if(endsWith(newatt$loc[i],"t")||endsWith(newatt$loc[i],"s")||endsWith(newatt$loc[i],"f")||endsWith(newatt$loc[i],"w")){
+    classify[i]="front"
+  }
+  else if(endsWith(newatt$loc[i],"m")){
+    classify[i]="center"
+  }
+  else if(endsWith(newatt$loc[i],"b")){
+    classify[i]="back"
+  }
+  else{
+    classify[i]="gk"
+  }
+}
+newatt$class<-classify
+newtree<-newatt
+newtree$loc=NULL
+kable(head(newtree[,30:35],10),caption = "第二颗决策树训练集（部分）")
+```
+
+之后，我们将数据导出为txt文件，这个时候训练集中包含14370个观测值，
+
+```{r,echo=FALSE}
+write.table(newtree,"newtree.txt",col.names = F,row.names = F,quote = F,sep = ",")
+```
+
+这个时候，我们的预测精度大大提升为0.90625。
+
+下面我们通过一个表格把两次的预测结果与原始分类放在一起来比较一下两种分类的不同。
+
+```{r,echo=FALSE}
+mmm<-matrix(c("center","front","front","front","back","center","back",
+            "center","center","front","back","gk","center","gk",
+            "front","center","front","center","back","back","center",
+            "front","gk","back","back","gk","center","center",
+            "center","center","back","front","center","front","front","front","back","center","back","center",
+            "center","front","back","gk","center","gk","front","center",
+            "center","center","back","back","center","center","gk","center",
+            "center","gk","center","center","back","center","gk","center",
+          tree_test$class),byrow = F,ncol = 3)
+
+rownames(mmm)<-LFC$name
+colnames(mmm)<-c("new_predict","old_predict","original")
+kable(mmm,caption = "第二颗树testing set 原分类与预测分类对比")
+```
+
+我们可以看到，利用新范围的训练集得到的决策树更好地预测了能力值较低的球员的分类，这个时候依然分类与原始分类有偏差的球员，我们认为这是“万金油”类型的球员，即一人可以胜任场上的多个角色，这也是符合我们对于足球世界的认识的，通过查阅相关比赛资料，我们可以看到，原始分类与我们决策树得到的分类不同的球员，例如：T. Alexander-Arnold 在现实中多打右边后卫（back），但也有打后腰（center）的比赛, A. Oxlade-Chamberlain现在打中前卫（center）但是在转会 **Liverpool** 足球俱乐部之前，多打边锋（front）。
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 3.第三种分类方法}
+
+最后我们把训练集选取为除去**Liverpol**俱乐部球员的全部球员，考虑到**Liverpol**俱乐部没有能力值不足60的球员，所以我们认为这次预测的精度不会有很大变化。
+
+```{r,echo=FALSE}
+renew<-data0 %>% select("name","club","age","league","height_cm","weight_kg",
+                       "nationality","eur_value","eur_wage","overall",
+                       "potential",34:94) 
+renew[is.na(renew)]<-0
+decisiontree_newdata1<-renew%>%filter(club!="Liverpool")
+newattr<-list()
+for(i in 1:17962){
+  newattr[[i]]=decisiontree_newdata1[i,][12:45] %>% sapply(attribute)
+}
+newattr1<-list()
+newattr2<-vector()
+for(i in 1:34){
+  for(j in 1:17962){
+    newattr2[j]=newattr[[j]][i]
+  }
+  newattr1[[i]]=newattr2
+}
+newatt<-as.data.frame(newattr1)
+colnames(newatt)=names(renew[12:45])
+newlocationall<-list()
+for(i in 1:17962){
+  newlocationall[[i]] = loc(as.vector(unlist(decisiontree_newdata1[i,][46:72])))
+  l=length(newlocationall[[i]])
+  newlocationall[[i]]= newlocationall[[i]][sample(l)[1]]
+}
+newatt$loc<-unlist(newlocationall)
+#now, to simplify the question, we classify the loc into "front", "center"
+#"back","gk"
+classify<-vector()
+for(i in 1:length(newatt$loc)){
+  if(endsWith(newatt$loc[i],"t")||endsWith(newatt$loc[i],"s")||endsWith(newatt$loc[i],"f")||endsWith(newatt$loc[i],"w")){
+    classify[i]="front"
+  }
+  else if(endsWith(newatt$loc[i],"m")){
+    classify[i]="center"
+  }
+  else if(endsWith(newatt$loc[i],"b")){
+    classify[i]="back"
+  }
+  else{
+    classify[i]="gk"
+  }
+}
+newatt$class<-classify
+newtree<-newatt
+newtree$loc=NULL
+kable(head(newtree[,30:35],10),caption = "第三颗决策树训练集（部分）")
+```
+
+之后，我们将数据导出为txt文件，这个时候训练集中包含17962个观测值，
+
+```{r,echo=FALSE}
+write.table(newtree,"newtree1.txt",col.names = F,row.names = F,quote = F,sep = ",")
+```
+
+这个时候，我们的预测精度降低为0.81250，我们把三种分类方法得到的预测结果与原始分类进行比较。
+
+```{r,echo=FALSE}
+mmm<-matrix(c("center","front","center","center","back","center","back","center","center","front","back","gk","center","gk","front","center","front","center","back","back","front","front","gk","back","back","gk","center","center","center","center","back","front","center","front","front","front","back","center","back",          "center","center","front","back","gk","center","gk",
+            "front","center","front","center","back","back","center",
+            "front","gk","back","back","gk","center","center",
+            "center","center","back","front","center","front","front","front","back","center","back","center",
+            "center","front","back","gk","center","gk","front","center",
+            "center","center","back","back","center","center","gk","center",
+            "center","gk","center","center","back","center","gk","center",         tree_test$class),byrow = F,ncol = 4)
+
+rownames(mmm)<-LFC$name
+colnames(mmm)<-c("third_predict","second_predict","first_predict","original")
+kable(mmm,caption = "三颗树训练集原分类与预测分类对比")
+```
+
+很明显，在预测精度上，第二棵树大于第三棵树大于第一棵树。从而我们认为，决策树模型对于训练集的要求比较高，当训练集数据对于新数据的代表性比较好时，预测的精度会很高，但如果有过多的训练数据会干扰模型训练的精度，所以训练数据并不是越多越好，提醒我们在构建决策树模型时对于训练数据的选取非常重要。
+
+##\leftline{\heiti \fontsize{14pt}{21pt}\selectfont 四.从决策树算法出发的扩展}
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 1.用贪心算法进行剪枝}
+
+我们知道运用决策树算法时经常需要面对一个变量数很大的原始训练集数据,由于我们对于变量之间的关系在训练之前并不了解,而由于为了追求训练效果,往往使用大量数据训练,这个时候就难免会出现过拟合的问题,即模型过于依赖现有的训练集,对于未来数据的预测的偏差增大,决策树的效率会降低很多。
+
+针对这种情况，我们采用贪心算法进行剪枝，即对于每一个除了根节点外的所有内部节点，都进行“剪枝”的尝试。对于同一个调整集，选择进行“剪枝”操作后预测精度提升最多的“新决策树”作为我们下一轮迭代的初始模型，迭代当“剪枝”后预测精度不再增大时停止，得到我们想要的决策树模型。通过此算法，可以很好的解决过拟合的问题，但此算法的时间复杂度非常大，当数据量很大，变量数目很多时，计算时间会很长。
+
+用贪心算法进行剪枝的算法实现如下：\newline
+
+\noindent Prune(tree T,TUNE set)\newline
+\noindent 1.Compute T's accuracy on TUNE; call it Acc(T)
+
+\noindent 2.For every internal node N in T, do:
+
+a)New tree $T_n$=copy of T, but prune the subtree under N
+
+b)N becomes a leaf node in $T_n$. The class is the majority vote of TRAIN examples reaching N
+
+c)Acc($T_n$)=$T_n's$ accuracy on TUNE
+
+\noindent 3.Let $T*$ be the tree with the largest Acc(), set T=$T*$
+
+\noindent 4.Repeat from step 1 until no more improvement
+
+\noindent Return T
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 2.随机森林算法}
+
+随机森林(random forest)是另外一种解决过拟合问题的算法,即将多颗决策树结合在一起,预测值取多颗决策树结果中的大多数。随机森林的两个主要想法是：
+
+1.bagging:随机地在数据集中选取一部分作为训练集
+
+2.randomized node optimization:每次当一个结点被分裂时，随机地从可选的属性中选取一部分做为当前结点可选的属性的集合。
+
+ 
+\noindent 决策树算法实现如下：
+\noindent For each tree\newline
+1.训练集的选取：从N个可选的examples中有放回地选取n个作为训练集。\newline 2.在构建决策树的过程中，对于每个结点，随机地从M个可选的属性中随机选取一个大小为m的子集（m<<M）\newline 3.选取信息增益最大的属性作为划分当前结点的依据。
+
+#\leftline{\heiti \fontsize{15pt}{22.5pt} \selectfont 四、线性回归模型}
+
+##\leftline{\heiti \fontsize{14pt}{21pt}\selectfont(一)线性回归模型思路及假设}
+线性回归是一种统计过程，用于通过线性模型描述变量之间的关系时，从自变量预测因变量的值。
+线性回归方程可以写为：\begin{displaymath} \vec y = m\vec x+\vec b \end{displaymath} 其中m是回归线的斜率，b是回归线的Y截距。
+在统计学中，线性回归是一种估算一个变量y在给定其他变量x的值的条件下的期望值的方法，依赖的自变量可能是标量或向量。如果自变量是一个向量，则说明是多重线性回归。
+
+线性回归通常可以表示为，$y=\alpha+\beta x+\epsilon$, $\epsilon$被称为误差项，他是模型随机性的来源。通常我们假设误差项满足均值为零的正态分布，并且对于每一个观测值得误差项独立同分布。并且认为$\epsilon$与x是无关的。
+
+我们将建立四个线性回归模型,分别是,
+
+\begin{itemize}
+\item front能力值作为响应变量,球员属性作为自变量的线性回归模型
+\item center能力值作为响应变量,球员属性作为自变量的线性回归模型
+\item back能力值作为响应变量,球员属性作为自变量的线性回归模型
+\item gk能力值作为响应变量,球员属性作为自变量的线性回归模型
+\end{itemize}
+
+我们认为能力值在0-100内连续变化,每一个球员属性有6个层次(与之前相同),假设误差项满足独立同分布于均值为零,方差为 $\sigma^2$ 的正态分布。我们的预测函数为比较每一个球员四项能力值的大小，将最大值所处的位置作为球员分类划分的依据。例如球员A的（front，center,back,gk）能力值分别为（80，70，60，30），则我们将球员A划分为front。
+
+##\leftline{\heiti\fontsize{14pt}{21pt}\selectfont(二)构建线性回归模型与结果分析}
+
+我们将选取与决策树模型相同的三组训练集和相同的测试集，这个时候我们不再对球员属性进行划分而是使用其原始的数值数据。
+
+我们将首先对数据进行处理，分别将，球员所有属于front的场上位置能力值的最大值作为front能力值，球员所有属于center的场上位置能力值的最大值作为center能力值，
+球员所有属于back的场上位置能力值的最大值作为back能力值，球员所有属于gk的场上位置能力值的最大值作为gk能力值。
+
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 1.第一种线性回归模型}
+
+我们首先用第三组训练集来训练模型，即使用全部数据来作为训练集。
+
+```{r,echo=FALSE}
+treefront<-vector()
+treecenter<-vector()
+treeback<-vector()
+treegk<-vector()
+ana<-decisiontree_newdata1[46:72]
+endt<-ana%>%select(ends_with("t"))
+ends<-ana%>%select(ends_with("s"))
+endf<-ana%>%select(ends_with("f"))
+endw<-ana%>%select(ends_with("w"))
+endm<-ana%>%select(ends_with("m"))
+endb<-ana%>%select(ends_with("b"))
+endk<-ana%>%select(ends_with("k"))
+for(i in 1:17962){
+  treefront[i]<-max(endt[i,1],ends[i,1],ends[i,2],endf[i,1],endf[i,2],endf[i,3],endw[i,1],endw[i,2])
+  treecenter[i]<-max(endm[i,])
+  treeback[i]<-max(endb[i,])
+  treegk[i]<-endk[i,1]
+}
+treegk<-unlist(treegk)
+reg<-decisiontree_newdata1[,12:45]
+reg$front<-treefront
+reg$center<-treecenter
+reg$back<-treeback
+reg$gk<-treegk
+kable(head(reg[,c(1,10,20,30,35,36,37,38)],10),caption = "线性回归模型训练集3（部分）")
+```
+
+接下来我们进行线性模型的搭建，分别对front，center，back，gk关于球员属性建模。  
+
+```{r,echo=FALSE}
+reg1<-reg
+reg1$center<-NULL
+reg1$back<-NULL
+reg1$gk<-NULL
+model1<-lm(front~.,reg1)
+```
+
+对于front与球员属性模型，我们可以得到对模型显著性的F检验的p-value: < 2.2e-16，因此我们可以认为我们得到的模型是显著的，而对于单个系数T检验得到的p-value，得到sliding_tackle（0.156618）， marking（0.766923）， volleys（0.939927） 是不显著的，即这些因素对于模型的影响是很小的，我们可以更新模型使得模型不包含这几个自变量，但考虑到现实足球世界里，每一个球员属性都对一个球员确定其场上位置有影响，去掉变量的代价太大，所以我们选择保留这些不显著的自变量。
+
+```{r,echo=FALSE}
+test<-LFC[,12:45]
+front<-predict(model1,test)
+reg2<-reg
+reg2$front<-NULL
+reg2$back<-NULL
+reg2$gk<-NULL
+model2<-lm(center~.,reg2)
+```
+
+同样地，对于center与球员属性模型的显著性检验得到的p-value: < 2.2e-16，并且Adjusted R-squared等于  0.9868，可以说模型对于数据的线性拟合度非常好，我们可以看到，在上一个模型的t检验中不显著的sliding_tackle（< 2e-16）在这个模型里是显著的，可以说明铲球对于一个中场球员更为重要，而前场球员的这项能力便显得不是那么有用了。同样的，对于本模型中不显著的自变量我们保留他在模型中，因为删掉一个自变量可能对模型的准确度造成极大的影响，而保留其的影响是微乎其微的。
+
+```{r,echo=FALSE}
+center<-predict(model2,test)
+reg3<-reg
+reg3$front<-NULL
+reg3$center<-NULL
+reg3$gk<-NULL
+model3<-lm(back~.,reg3)
+```
+
+对于第三个模型，我们summary的结果与前两个模型的结果非常相似，故我们认为第三个模型符合我们的要求。
+
+```{r,echo=FALSE}
+back<-predict(model3,test)
+reg4<-reg
+reg4$front<-NULL
+reg4$center<-NULL
+reg4$back<-NULL
+model4<-lm(gk~.,reg4)
+```
+
+第四个模型与上面三个模型一样，值得我们信赖。
+
+我们将模型得到的结果与预测值呈现在下面的表格中，
+
+```{r,echo=FALSE}
+gk<-predict(model4,test)
+pre<-vector()
+for(i in 1:32){
+  m=max(front[i],center[i],back[i],gk[i])
+  if(front[i]==m){
+    pre[i]="front"
+  }else if(center[i]==m){
+    pre[i]="center"
+  }else if(back[i]==m){
+    pre[i]="back"
+  }else{
+    pre[i]="gk"
+  }
+    
+}
+result<-data.frame(tree_test$class,front,center,back,gk,pre)
+accuracy<-0
+for(i in 1:32){
+  if(result[i,1]==result[i,6]){
+    accuracy=accuracy+1
+  }
+}
+mm<-as.matrix(result)
+colnames(mm)<-c("original class","front","center","back","gk","predict class")
+kable(mm,caption = "线性回归模型预测结果")
+```
+
+我们用第三种训练集得到的测试精度为0.9375，这个精度是目前我们得到的最高的精度。可以看到预测的结果与球员能力没有偏向，两个预测失败的球员一个能力值很高，一个能力值很低。这个时候对模型的拟合和预测都非常符合我们的要求，可以看到对于简单模型，线性回归可以发挥非常好的作用。同时我们也可以发现对连续的数值型的变量（即回归问题），线性回归更充分的利用了数据，而决策树模型只能离散地来考虑问题，当把连续型的数据转化为离散的数据时，我们对于数据掌握的信息自然损失了很多，模型的预测能力也因而降低。
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 2.第二种线性回归模型}
+
+下面我们用第二种训练集来训练模型，即能力值大于60的全部球员。
+
+```{r,echo=FALSE}
+treefront<-vector()
+treecenter<-vector()
+treeback<-vector()
+treegk<-vector()
+ana<-decisiontree_newdata[46:72]
+endt<-ana%>%select(ends_with("t"))
+ends<-ana%>%select(ends_with("s"))
+endf<-ana%>%select(ends_with("f"))
+endw<-ana%>%select(ends_with("w"))
+endm<-ana%>%select(ends_with("m"))
+endb<-ana%>%select(ends_with("b"))
+endk<-ana%>%select(ends_with("k"))
+for(i in 1:14370){
+  treefront[i]<-max(endt[i,1],ends[i,1],ends[i,2],endf[i,1],endf[i,2],endf[i,3],endw[i,1],endw[i,2])
+  treecenter[i]<-max(endm[i,])
+  treeback[i]<-max(endb[i,])
+  treegk[i]<-endk[i,1]
+}
+treegk<-unlist(treegk)
+reg<-decisiontree_newdata[,12:45]
+reg$front<-treefront
+reg$center<-treecenter
+reg$back<-treeback
+reg$gk<-treegk
+kable(head(reg[,c(1,10,20,30,35,36,37,38)],10),caption = "线性回归模型训练集2（部分）")
+```
+
+接下来我们用得到的训练集进行线性模型的搭建，  
+
+```{r,echo=FALSE,include=FALSE}
+reg1<-reg
+reg1$center<-NULL
+reg1$back<-NULL
+reg1$gk<-NULL
+model1<-lm(front~.,reg1)
+test<-LFC[,12:45]
+front<-predict(model1,test)
+reg2<-reg
+reg2$front<-NULL
+reg2$back<-NULL
+reg2$gk<-NULL
+model2<-lm(center~.,reg2)
+center<-predict(model2,test)
+reg3<-reg
+reg3$front<-NULL
+reg3$center<-NULL
+reg3$gk<-NULL
+model3<-lm(back~.,reg3)
+back<-predict(model3,test)
+reg4<-reg
+reg4$front<-NULL
+reg4$center<-NULL
+reg4$back<-NULL
+model4<-lm(gk~.,reg4)
+```
+
+
+```{r,echo=FALSE}
+gk<-predict(model4,test)
+pre<-vector()
+for(i in 1:32){
+  m=max(front[i],center[i],back[i],gk[i])
+  if(front[i]==m){
+    pre[i]="front"
+  }else if(center[i]==m){
+    pre[i]="center"
+  }else if(back[i]==m){
+    pre[i]="back"
+  }else{
+    pre[i]="gk"
+  }
+    
+}
+result<-data.frame(tree_test$class,front,center,back,gk,pre)
+accuracy<-0
+for(i in 1:32){
+  if(result[i,1]==result[i,6]){
+    accuracy=accuracy+1
+  }
+}
+mm<-as.matrix(result)
+colnames(mm)<-c("original class","front","center","back","gk","predict class")
+kable(mm,caption = "线性回归模型预测结果")
+```
+
+这个时候得到的预测精度为0.90625。三个预测失败的例子其中两个和第三种训练集的结果一样，由此我们可以推断出线性回归模型对于数据的依赖程度比较低，与决策树模型对于顶尖球员预测能力较好的情况，可以比较好的预测更为一般的球员而不被球员类型限制。线性回归模型的预测精度与有效数据量的大小成正比，因为我们的原始数据均来自于真实数据，所以不存在outliers。而决策树模型对于这个训练集的分类能力最强，因此在实际应用中，需要我们“有效率”的去选择训练集，这个时候只需要不是非常大的训练集就可以得到用决策树算法得到的令人满意的分类器。
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 3.第三种线性回归模型}
+
+下面我们用第一种训练集来训练模型，即用全部能力值大于80的球员数据。
+
+```{r,echo=FALSE}
+treefront<-vector()
+treecenter<-vector()
+treeback<-vector()
+treegk<-vector()
+ana<-decisiontree_data[46:72]
+endt<-ana%>%select(ends_with("t"))
+ends<-ana%>%select(ends_with("s"))
+endf<-ana%>%select(ends_with("f"))
+endw<-ana%>%select(ends_with("w"))
+endm<-ana%>%select(ends_with("m"))
+endb<-ana%>%select(ends_with("b"))
+endk<-ana%>%select(ends_with("k"))
+for(i in 1:379){
+  treefront[i]<-max(endt[i,1],ends[i,1],ends[i,2],endf[i,1],endf[i,2],endf[i,3],endw[i,1],endw[i,2])
+  treecenter[i]<-max(endm[i,])
+  treeback[i]<-max(endb[i,])
+  treegk[i]<-endk[i,1]
+}
+treegk<-unlist(treegk)
+reg<-decisiontree_data[,12:45]
+reg$front<-treefront
+reg$center<-treecenter
+reg$back<-treeback
+reg$gk<-treegk
+kable(head(reg[,c(1,10,20,30,35,36,37,38)],10),caption = "线性回归模型训练集1（部分）")
+```
+
+接下来我们用得到的进行线性模型的搭建， 
+
+```{r,echo=FALSE,include=FALSE}
+reg1<-reg
+reg1$center<-NULL
+reg1$back<-NULL
+reg1$gk<-NULL
+model1<-lm(front~.,reg1)
+test<-LFC[,12:45]
+front<-predict(model1,test)
+reg2<-reg
+reg2$front<-NULL
+reg2$back<-NULL
+reg2$gk<-NULL
+model2<-lm(center~.,reg2)
+center<-predict(model2,test)
+reg3<-reg
+reg3$front<-NULL
+reg3$center<-NULL
+reg3$gk<-NULL
+model3<-lm(back~.,reg3)
+back<-predict(model3,test)
+reg4<-reg
+reg4$front<-NULL
+reg4$center<-NULL
+reg4$back<-NULL
+model4<-lm(gk~.,reg4)
+```
+
+```{r,echo=FALSE}
+gk<-predict(model4,test)
+pre<-vector()
+for(i in 1:32){
+  m=max(front[i],center[i],back[i],gk[i])
+  if(front[i]==m){
+    pre[i]="front"
+  }else if(center[i]==m){
+    pre[i]="center"
+  }else if(back[i]==m){
+    pre[i]="back"
+  }else{
+    pre[i]="gk"
+  }
+    
+}
+result<-data.frame(tree_test$class,front,center,back,gk,pre)
+accuracy<-0
+for(i in 1:32){
+  if(result[i,1]==result[i,6]){
+    accuracy=accuracy+1
+  }
+}
+mm<-as.matrix(result)
+colnames(mm)<-c("original class","front","center","back","gk","predict class")
+kable(mm,caption = "线性回归模型预测结果")
+```
+
+这个时候预测的精度为0.8125。对于第一个训练集只为能力值大于80的顶尖球员，可以看到这个时候线性回归模型对于顶尖球员的预测能力比较好，之前两个模型预测错误的顶尖球员在这个模型中预测正确，因此，线性回归模型也需要选取有代表性的数据作为训练集，但并没有决策树模型表现出来的对于数据的依赖程度大。同时我们可以发现，在数据量不大的情况下，线性回归得到的模型预测能力比决策树得到的要强很多，因为当数据大于等于两个时，我们就可以用最小二乘法拟合出一条直线方程去最小化残差平方和；而决策树的搭建需要大量的数据去训练才能往下延伸成为一颗可以用来分类的树。
+
+###\leftline{\heiti \fontsize{12pt}{18pt}\selectfont 4.线性回归模型总结及优缺点}
+
+可以看到对于本论文的数据拟合的模型，线性回归的表现非常好，这是因为**FIFA 18**这个数据集并不大，并且因变量与自变量之间有很强的线性相关关系，我们知道线性回归模型是一种简单的模型，因此在处理数据量不大，模型比较简单的情况，我们更倾向于运用线性回归解决问题，这也是著名的奥卡姆剃刀理论，当两种模型的效力相近时，我们更愿意使用，或者是更佳的选择是简单的模型。但是，模型简单也是线性回归的一大缺陷，因为在实际生活中的数据往往不存在直观的线性关系，又或者数据里有很多outliers，都会极大地影响模型的准确性，而对于变量的类型是factor的分类问题，线性回归也不能很好地建立模型。而当我们错误地使用线性回归模型到不适合它的数据上（不满足线性，存在outlier）我们会发现，模型的残差平方和会非常大，另一方面也对原始数据发生了过拟合，预测的效果会大大降低。针对这个情况，我认为线性回归模型在进行数据预处理，或者进行数据清洗时是非常有用的，它可以发现模型中异常点的出现以及来检验模型的假设是否满足。
+
+#\leftline{\heiti \fontsize{15pt}{22.5pt} \selectfont 五、两种模型比较}
+
+```{r,echo=FALSE}
+com<-matrix(c(0.6875,0.90625,0.8125,0.8125,0.90625,0.9375),byrow = T,nrow = 2)
+rownames(com)<-c("决策树","线性回归")
+colnames(com)<-c("训练集1","训练集2","训练集3")
+kable(com,caption = "两种模型预测精度比较")
+```
+
+我们可以看到决策树的预测结果对训练集的选取有很大的关系，当训练集为能力值大于60的全部球员时的预测精度最高，但当训练集过大或过小时，预测精度都会相应的下降，当选取的训练集为能力值大于80的全部球员时明显对于顶尖球员的预测精度更高。而线性回归模型对于整体的预测精确度对于训练集没有明显的偏向，当训练集的数据量越大时预测的精度越高。因为线性回归的预测情况很大程度基于模型的选择，在这里我们选择了线性模型很好的拟合了原始球员属性数据的情况，但如果我们的数据不符合线性模型，这个时候的预测结果会出现较大的偏差；而决策树的模型是基于数据，当数据选取的比较合理的时候，得到的预测结果的精度会大大提升，但决策树往往伴随着过拟合的问题，即有些球员属性在帮助我们分类的时候没有用途，反而“拖后腿，混淆视听”了，我们称这种属性为噪音，为了消除这种情况，我们可以使用“修建树杈”的算法，得到精度最优的数，也可以通过构造随机森林消除过拟合带来的影响。
+
